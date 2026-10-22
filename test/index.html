@@ -1,0 +1,2137 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>颱風對台灣的影響：原理 3D / 向量互動視覺化工作台</title>
+  <meta name="description" content="運用純向量 SVG、Web Audio API 與 3D 透視打造的專業颱風力學與中央山脈地形效應互動視覺化工作台">
+  <style>
+    /* ==========================================================================
+       1. 核心設計系統與變數 (Design Tokens & Dark Tech Theme)
+       ========================================================================== */
+    :root {
+      --bg-space: #070b12;
+      --bg-surface: rgba(13, 21, 38, 0.78);
+      --bg-surface-elevated: rgba(20, 32, 58, 0.88);
+      --border-glow: rgba(56, 189, 248, 0.25);
+      --border-accent: rgba(56, 189, 248, 0.6);
+      
+      --accent-cyan: #38bdf8;
+      --accent-teal: #2dd4bf;
+      --accent-amber: #fbbf24;
+      --accent-rose: #f43f5e;
+      --accent-purple: #c084fc;
+      --accent-blue: #60a5fa;
+
+      --text-primary: #f8fafc;
+      --text-secondary: #94a3b8;
+      --text-muted: #64748b;
+
+      --elevation-shadow: 0 20px 40px -15px rgba(0, 0, 0, 0.8), 0 0 25px rgba(56, 189, 248, 0.15);
+      --glass-blur: blur(16px);
+      --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+      --ease-smooth: cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+
+    body {
+      background-color: var(--bg-space);
+      color: var(--text-primary);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", "PingFang TC", "Noto Sans TC", sans-serif;
+      min-height: 100vh;
+      overflow-x: hidden;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      position: relative;
+    }
+
+    /* 背景星空與大氣網格 (零外部依賴純 CSS/SVG 繪製) */
+    .space-grid-bg {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 0;
+      background-image: 
+        radial-gradient(circle at 50% 30%, rgba(14, 165, 233, 0.1) 0%, transparent 65%),
+        linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+      background-size: 100% 100%, 48px 48px, 48px 48px;
+    }
+
+    /* ==========================================================================
+       2. 頂部儀表板與標題區 (Tactical HUD Header)
+       ========================================================================== */
+    header.hud-header {
+      position: relative;
+      z-index: 20;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 16px 28px;
+      background: var(--bg-surface);
+      backdrop-filter: var(--glass-blur);
+      -webkit-backdrop-filter: var(--glass-blur);
+      border-bottom: 1px solid var(--border-glow);
+    }
+
+    .brand-group {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .radar-beacon {
+      width: 44px;
+      height: 44px;
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .beacon-ring {
+      position: absolute;
+      inset: 0;
+      border: 2px solid var(--accent-cyan);
+      border-radius: 50%;
+      opacity: 0.8;
+      animation: pulse-ring 2.5s infinite var(--ease-smooth);
+    }
+
+    .beacon-ring:nth-child(2) {
+      animation-delay: 1.25s;
+    }
+
+    @keyframes pulse-ring {
+      0% { transform: scale(0.4); opacity: 1; }
+      100% { transform: scale(1.6); opacity: 0; }
+    }
+
+    .beacon-core {
+      width: 14px;
+      height: 14px;
+      background: var(--accent-cyan);
+      border-radius: 50%;
+      box-shadow: 0 0 14px var(--accent-cyan);
+    }
+
+    .title-area h1 {
+      font-size: 20px;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      background: linear-gradient(135deg, #ffffff 40%, var(--accent-cyan));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .title-area p {
+      font-size: 12px;
+      color: var(--text-secondary);
+      letter-spacing: 0.04em;
+      margin-top: 2px;
+    }
+
+    .badge-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 9999px;
+      background: rgba(45, 212, 191, 0.12);
+      border: 1px solid rgba(45, 212, 191, 0.35);
+      color: var(--accent-teal);
+    }
+
+    .badge-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--accent-teal);
+      box-shadow: 0 0 6px var(--accent-teal);
+      animation: blink 1.2s infinite ease-in-out;
+    }
+
+    @keyframes blink {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.2; }
+    }
+
+    /* 頂部快捷操作按鈕組 (具備微互動音效與彈跳) */
+    .top-action-bar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .icon-action-btn {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--border-glow);
+      color: var(--text-primary);
+      height: 40px;
+      padding: 0 16px;
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 500;
+      transition: transform 0.25s var(--ease-spring), border-color 0.2s, background-color 0.2s;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .icon-action-btn:hover {
+      background: rgba(56, 189, 248, 0.15);
+      border-color: var(--border-accent);
+      transform: translateY(-2px) scale(1.03);
+    }
+
+    .icon-action-btn:active {
+      transform: translateY(1px) scale(0.96);
+    }
+
+    /* ==========================================================================
+       模組 2：SVG 圖示與路徑動畫 (Stroke Dashoffset 特效按鈕)
+       ========================================================================== */
+    .svg-draw-icon {
+      width: 20px;
+      height: 20px;
+      overflow: visible;
+    }
+
+    /* 截圖照相機繪圖動畫 */
+    .icon-camera path {
+      stroke-dasharray: 60;
+      stroke-dashoffset: 0;
+      transition: stroke-dashoffset 0.6s ease, stroke 0.3s;
+    }
+    .icon-action-btn:hover .icon-camera path {
+      animation: draw-path 0.7s var(--ease-spring) forwards;
+    }
+
+    /* 收藏星標微互動 */
+    .icon-star path {
+      stroke-dasharray: 80;
+      stroke-dashoffset: 0;
+      transition: all 0.4s var(--ease-spring);
+    }
+    .icon-action-btn.starred .icon-star path {
+      fill: var(--accent-amber);
+      stroke: var(--accent-amber);
+      animation: star-bounce 0.6s var(--ease-spring) forwards;
+    }
+
+    /* 勾選圖示描邊 */
+    .icon-check path {
+      stroke-dasharray: 40;
+      stroke-dashoffset: 0;
+    }
+    .icon-action-btn.active .icon-check path {
+      animation: check-draw 0.5s var(--ease-spring) forwards;
+    }
+
+    @keyframes draw-path {
+      0% { stroke-dashoffset: 60; }
+      100% { stroke-dashoffset: 0; }
+    }
+
+    @keyframes star-bounce {
+      0% { transform: scale(0.6) rotate(-20deg); }
+      50% { transform: scale(1.3) rotate(15deg); }
+      100% { transform: scale(1) rotate(0deg); }
+    }
+
+    @keyframes check-draw {
+      0% { stroke-dashoffset: 40; }
+      100% { stroke-dashoffset: 0; }
+    }
+
+    /* ==========================================================================
+       3. 主要工作台視區佈局 (Workbench Workspace Layout)
+       ========================================================================== */
+    main.workbench-container {
+      position: relative;
+      z-index: 10;
+      flex: 1;
+      display: grid;
+      grid-template-columns: 340px 1fr 340px;
+      gap: 18px;
+      padding: 18px 24px;
+      min-height: calc(100vh - 170px);
+    }
+
+    @media (max-width: 1200px) {
+      main.workbench-container {
+        grid-template-columns: 300px 1fr;
+      }
+      .panel-telemetry {
+        grid-column: span 2;
+      }
+    }
+
+    @media (max-width: 900px) {
+      main.workbench-container {
+        display: flex;
+        flex-direction: column;
+      }
+    }
+
+    /* 側邊玻璃擬態控制卡片 */
+    .glass-panel {
+      background: var(--bg-surface);
+      backdrop-filter: var(--glass-blur);
+      -webkit-backdrop-filter: var(--glass-blur);
+      border: 1px solid var(--border-glow);
+      border-radius: 16px;
+      padding: 18px;
+      box-shadow: var(--elevation-shadow);
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .panel-title {
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--accent-cyan);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      letter-spacing: 0.05em;
+    }
+
+    .panel-title svg {
+      width: 16px;
+      height: 16px;
+    }
+
+    /* 視角切換器 (2D / Isometric 3D / Cross Section) */
+    .view-mode-tabs {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 6px;
+      background: rgba(0, 0, 0, 0.35);
+      padding: 4px;
+      border-radius: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.06);
+    }
+
+    .view-tab-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-secondary);
+      font-size: 11px;
+      font-weight: 600;
+      padding: 8px 4px;
+      border-radius: 8px;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+      transition: all 0.25s var(--ease-spring);
+    }
+
+    .view-tab-btn svg {
+      width: 18px;
+      height: 18px;
+      stroke: currentColor;
+    }
+
+    .view-tab-btn:hover {
+      color: var(--text-primary);
+      background: rgba(255, 255, 255, 0.05);
+    }
+
+    .view-tab-btn.active {
+      background: var(--accent-cyan);
+      color: #04101e;
+      box-shadow: 0 4px 12px rgba(56, 189, 248, 0.4);
+      transform: scale(1.02);
+    }
+
+    /* 颱風典型路徑預設選單 (Case Studies) */
+    .case-selector-grid {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .case-card {
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.07);
+      border-radius: 10px;
+      padding: 10px 12px;
+      cursor: pointer;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      transition: all 0.25s var(--ease-spring);
+    }
+
+    .case-card:hover {
+      background: rgba(56, 189, 248, 0.08);
+      border-color: rgba(56, 189, 248, 0.3);
+      transform: translateX(3px);
+    }
+
+    .case-card.active {
+      background: rgba(56, 189, 248, 0.16);
+      border-color: var(--accent-cyan);
+    }
+
+    .case-info h4 {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    .case-info p {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 2px;
+    }
+
+    .case-badge {
+      font-size: 10px;
+      padding: 3px 8px;
+      border-radius: 6px;
+      background: rgba(251, 191, 36, 0.15);
+      border: 1px solid rgba(251, 191, 36, 0.3);
+      color: var(--accent-amber);
+    }
+
+    /* 圖層切換核取框 */
+    .layer-toggles-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .layer-toggle-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: rgba(255, 255, 255, 0.03);
+      padding: 8px 12px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 12px;
+      color: var(--text-secondary);
+      border: 1px solid transparent;
+      transition: all 0.2s var(--ease-spring);
+    }
+
+    .layer-toggle-item:hover {
+      border-color: rgba(255, 255, 255, 0.1);
+      color: var(--text-primary);
+    }
+
+    .switch-indicator {
+      width: 36px;
+      height: 20px;
+      background: rgba(255, 255, 255, 0.12);
+      border-radius: 9999px;
+      position: relative;
+      transition: background 0.3s;
+    }
+
+    .switch-knob {
+      width: 16px;
+      height: 16px;
+      background: #ffffff;
+      border-radius: 50%;
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      transition: transform 0.3s var(--ease-spring);
+    }
+
+    .layer-toggle-item.checked .switch-indicator {
+      background: var(--accent-cyan);
+    }
+
+    .layer-toggle-item.checked .switch-knob {
+      transform: translateX(16px);
+    }
+
+    /* ==========================================================================
+       4. 中間核心 3D / SVG 畫布區域 (Central Simulation Arena)
+       ========================================================================== */
+    .simulation-arena {
+      position: relative;
+      background: radial-gradient(circle at 50% 50%, rgba(15, 23, 42, 0.8) 0%, rgba(5, 8, 15, 0.95) 100%);
+      border: 1px solid var(--border-glow);
+      border-radius: 20px;
+      box-shadow: var(--elevation-shadow);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      perspective: 1400px;
+      min-height: 540px;
+    }
+
+    /* 3D 透視旋轉容器 */
+    .viewport-3d-wrapper {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      flex: 1;
+      transform-style: preserve-3d;
+      transition: transform 0.8s var(--ease-smooth);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    /* 視角類別切換 */
+    .viewport-3d-wrapper.view-2d {
+      transform: rotateX(0deg) rotateZ(0deg) scale(1);
+    }
+
+    .viewport-3d-wrapper.view-isometric {
+      transform: rotateX(54deg) rotateZ(-32deg) scale(0.96) translateZ(30px);
+    }
+
+    .viewport-3d-wrapper.view-profile {
+      transform: rotateX(82deg) rotateZ(-90deg) scale(1.15) translateY(-50px);
+    }
+
+    /* SVG 核心畫布主體 */
+    svg.simulation-canvas {
+      width: 100%;
+      height: 100%;
+      max-width: 820px;
+      max-height: 680px;
+      overflow: visible;
+      filter: drop-shadow(0 15px 35px rgba(0, 0, 0, 0.8));
+    }
+
+    /* 中央山脈 3D 浮雕投影層 */
+    .mountain-extrusion {
+      transform-style: preserve-3d;
+      transition: transform 0.3s;
+    }
+
+    /* 焚風熱空氣流動噴發效果 */
+    .foehn-burst {
+      opacity: 0;
+      transition: opacity 0.5s ease;
+    }
+    .foehn-burst.active {
+      opacity: 1;
+    }
+
+    /* 模組 2：颱風路徑與氣流描邊動畫 (Stroke Dashoffset) */
+    .track-path-line {
+      stroke: var(--accent-rose);
+      stroke-width: 3.5;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      stroke-dasharray: 1200;
+      stroke-dashoffset: 0;
+      filter: drop-shadow(0 0 8px rgba(244, 63, 94, 0.6));
+    }
+
+    .wind-streamline {
+      fill: none;
+      stroke: rgba(56, 189, 248, 0.5);
+      stroke-width: 1.5;
+      stroke-linecap: round;
+      stroke-dasharray: 16 8;
+      animation: wind-flow 1.6s linear infinite;
+    }
+
+    .isobar-ring {
+      fill: none;
+      stroke: rgba(255, 255, 255, 0.2);
+      stroke-width: 1.2;
+      stroke-dasharray: 6 4;
+      animation: isobar-rotate 25s linear infinite;
+      transform-origin: center;
+    }
+
+    @keyframes wind-flow {
+      to {
+        stroke-dashoffset: -48;
+      }
+    }
+
+    @keyframes isobar-rotate {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+
+    /* 畫布左上方 HUD 即時氣象標籤 */
+    .arena-overlay-hud {
+      position: absolute;
+      top: 16px;
+      left: 18px;
+      pointer-events: none;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      z-index: 10;
+    }
+
+    .hud-tag {
+      background: rgba(10, 16, 28, 0.85);
+      border: 1px solid var(--border-glow);
+      backdrop-filter: blur(8px);
+      padding: 4px 10px;
+      border-radius: 6px;
+      font-size: 11px;
+      color: var(--accent-cyan);
+      font-family: monospace;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .hud-tag span.val {
+      color: #fff;
+      font-weight: 700;
+    }
+
+    /* 模組 1：示範多媒體輕量化 <picture> 標籤彈窗/徽章 (零多餘請求) */
+    .payload-stats-pill {
+      position: absolute;
+      top: 16px;
+      right: 18px;
+      z-index: 10;
+      background: rgba(15, 23, 42, 0.85);
+      border: 1px solid rgba(45, 212, 191, 0.4);
+      padding: 6px 12px;
+      border-radius: 20px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 11px;
+      color: var(--accent-teal);
+      backdrop-filter: blur(8px);
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    }
+
+    /* 垂直剖面熱力學視圖浮層 (Cross-Section Diagram) */
+    .cross-section-overlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(6, 11, 20, 0.94);
+      backdrop-filter: blur(12px);
+      z-index: 15;
+      display: none;
+      flex-direction: column;
+      padding: 24px 30px;
+      animation: fadeIn 0.4s var(--ease-spring);
+    }
+
+    .cross-section-overlay.active {
+      display: flex;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: scale(0.98); }
+      to { opacity: 1; transform: scale(1); }
+    }
+
+    .cross-section-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 14px;
+    }
+
+    .cross-section-header h3 {
+      font-size: 16px;
+      color: var(--accent-amber);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .cross-close-btn {
+      background: rgba(255, 255, 255, 0.08);
+      border: none;
+      color: #fff;
+      padding: 4px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+
+    /* ==========================================================================
+       5. 右側實時遙測數據與科學原理解析 (Telemetry & Science Panel)
+       ========================================================================== */
+    .panel-telemetry {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .telemetry-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    .telemetry-card {
+      background: rgba(0, 0, 0, 0.3);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      border-radius: 10px;
+      padding: 10px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .telemetry-card .label {
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    .telemetry-card .value {
+      font-size: 20px;
+      font-weight: 700;
+      font-family: monospace;
+      color: var(--text-primary);
+    }
+
+    .telemetry-card .unit {
+      font-size: 11px;
+      color: var(--text-secondary);
+      font-weight: normal;
+      margin-left: 2px;
+    }
+
+    .science-card {
+      background: rgba(56, 189, 248, 0.04);
+      border: 1px solid rgba(56, 189, 248, 0.15);
+      border-radius: 12px;
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .science-card h4 {
+      font-size: 13px;
+      color: var(--accent-cyan);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .science-card p {
+      font-size: 12px;
+      color: var(--text-secondary);
+      line-height: 1.6;
+    }
+
+    .mechanism-steps {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-top: 4px;
+    }
+
+    .mechanism-step-item {
+      font-size: 11px;
+      padding: 6px 10px;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.03);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      transition: background 0.3s;
+    }
+
+    .mechanism-step-item.active {
+      background: rgba(56, 189, 248, 0.15);
+      border-left: 3px solid var(--accent-cyan);
+      color: #fff;
+    }
+
+    /* 警報提示橫幅 */
+    .warning-banner {
+      background: rgba(244, 63, 94, 0.12);
+      border: 1px solid rgba(244, 63, 94, 0.35);
+      border-radius: 10px;
+      padding: 10px 12px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      animation: alert-pulse 2s infinite ease-in-out;
+    }
+
+    @keyframes alert-pulse {
+      0%, 100% { border-color: rgba(244, 63, 94, 0.35); }
+      50% { border-color: rgba(244, 63, 94, 0.85); box-shadow: 0 0 12px rgba(244, 63, 94, 0.25); }
+    }
+
+    .warning-banner svg {
+      width: 22px;
+      height: 22px;
+      stroke: var(--accent-rose);
+      flex-shrink: 0;
+    }
+
+    .warning-banner .text {
+      font-size: 11px;
+      color: #fecdd3;
+      line-height: 1.4;
+    }
+
+    /* ==========================================================================
+       6. 底部時間軸控制台 (Timeline Scrubber & Playback Controls)
+       ========================================================================== */
+    footer.timeline-footer {
+      position: relative;
+      z-index: 20;
+      background: var(--bg-surface);
+      backdrop-filter: var(--glass-blur);
+      -webkit-backdrop-filter: var(--glass-blur);
+      border-top: 1px solid var(--border-glow);
+      padding: 14px 28px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .timeline-controls-row {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+    }
+
+    .playback-btn-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .play-btn {
+      width: 44px;
+      height: 44px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, var(--accent-cyan), #0284c7);
+      border: none;
+      color: #04101e;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      box-shadow: 0 0 16px rgba(56, 189, 248, 0.4);
+      transition: transform 0.25s var(--ease-spring), box-shadow 0.2s;
+    }
+
+    .play-btn:hover {
+      transform: scale(1.1);
+      box-shadow: 0 0 24px rgba(56, 189, 248, 0.65);
+    }
+
+    .play-btn:active {
+      transform: scale(0.95);
+    }
+
+    .play-btn svg {
+      width: 20px;
+      height: 20px;
+      fill: currentColor;
+    }
+
+    .small-ctrl-btn {
+      width: 34px;
+      height: 34px;
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--border-glow);
+      color: var(--text-primary);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: all 0.2s var(--ease-spring);
+    }
+
+    .small-ctrl-btn:hover {
+      background: rgba(56, 189, 248, 0.15);
+      transform: translateY(-1px);
+    }
+
+    .small-ctrl-btn svg {
+      width: 16px;
+      height: 16px;
+      stroke: currentColor;
+    }
+
+    /* 時間軸滑桿 (Custom Range Scrubber) */
+    .scrubber-track-container {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .stage-milestones {
+      display: flex;
+      justify-content: space-between;
+      position: relative;
+    }
+
+    .stage-tick {
+      font-size: 11px;
+      color: var(--text-muted);
+      cursor: pointer;
+      position: relative;
+      transition: color 0.2s;
+    }
+
+    .stage-tick:hover, .stage-tick.active {
+      color: var(--accent-cyan);
+      font-weight: 600;
+    }
+
+    .stage-tick::before {
+      content: '';
+      position: absolute;
+      top: -8px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--text-muted);
+      transition: all 0.2s;
+    }
+
+    .stage-tick.active::before {
+      background: var(--accent-cyan);
+      box-shadow: 0 0 8px var(--accent-cyan);
+      transform: translateX(-50%) scale(1.4);
+    }
+
+    input[type="range"].scrubber-input {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 100%;
+      height: 8px;
+      border-radius: 4px;
+      background: linear-gradient(to right, var(--accent-cyan) 0%, var(--accent-cyan) 0%, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0.1) 100%);
+      outline: none;
+      cursor: pointer;
+      transition: background 0.1s linear;
+    }
+
+    input[type="range"].scrubber-input::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      background: #ffffff;
+      border: 3px solid var(--accent-cyan);
+      box-shadow: 0 0 14px rgba(56, 189, 248, 0.8);
+      cursor: grab;
+      transition: transform 0.2s var(--ease-spring);
+    }
+
+    input[type="range"].scrubber-input::-webkit-slider-thumb:hover {
+      transform: scale(1.25);
+    }
+
+    input[type="range"].scrubber-input:active::-webkit-slider-thumb {
+      cursor: grabbing;
+      transform: scale(1.1);
+    }
+
+    /* 音效開關切換 */
+    .audio-toggle-btn {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 14px;
+      border-radius: 20px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--border-glow);
+      color: var(--text-secondary);
+      font-size: 12px;
+      cursor: pointer;
+      transition: all 0.2s var(--ease-spring);
+    }
+
+    .audio-toggle-btn.sound-on {
+      color: var(--accent-teal);
+      border-color: rgba(45, 212, 191, 0.5);
+      background: rgba(45, 212, 191, 0.12);
+    }
+
+    /* 氣壓與降雨色標圖例 (Legend) */
+    .radar-legend {
+      position: absolute;
+      bottom: 16px;
+      right: 18px;
+      background: rgba(10, 16, 28, 0.88);
+      border: 1px solid var(--border-glow);
+      backdrop-filter: blur(8px);
+      padding: 6px 12px;
+      border-radius: 8px;
+      font-size: 10px;
+      color: var(--text-secondary);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      z-index: 10;
+    }
+
+    .legend-bar {
+      width: 90px;
+      height: 8px;
+      border-radius: 4px;
+      background: linear-gradient(to right, #22c55e, #eab308, #ef4444, #a855f7);
+    }
+
+    /* 截圖成功提示吐司 (Toast) */
+    .toast-notification {
+      position: fixed;
+      bottom: 90px;
+      right: 24px;
+      background: rgba(15, 23, 42, 0.95);
+      border: 1px solid var(--accent-teal);
+      color: var(--text-primary);
+      padding: 12px 18px;
+      border-radius: 12px;
+      box-shadow: 0 10px 25px rgba(0, 0, 0, 0.6);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 13px;
+      z-index: 100;
+      transform: translateY(30px);
+      opacity: 0;
+      pointer-events: none;
+      transition: all 0.4s var(--ease-spring);
+    }
+
+    .toast-notification.show {
+      transform: translateY(0);
+      opacity: 1;
+      pointer-events: auto;
+    }
+  </style>
+</head>
+<body>
+  <!-- 背景空間星系網格 -->
+  <div class="space-grid-bg"></div>
+
+  <!-- ==========================================================================
+       頂部導航與儀表板 (HUD Header)
+       ========================================================================== -->
+  <header class="hud-header">
+    <div class="brand-group">
+      <div class="radar-beacon">
+        <div class="beacon-ring"></div>
+        <div class="beacon-ring"></div>
+        <div class="beacon-core"></div>
+      </div>
+      <div class="title-area">
+        <h1>
+          颱風力學與中央山脈地形效應
+          <span class="badge-status"><span class="badge-dot"></span>60 FPS 向量運算</span>
+        </h1>
+        <p>TYPHOON INTERACTION DYNAMICS & CENTRAL MOUNTAIN RANGE OROGRAPHIC WORKBENCH</p>
+      </div>
+    </div>
+
+    <!-- 模組 2：具備 Stroke Dashoffset 關鍵動畫之按鈕 -->
+    <div class="top-action-bar">
+      <!-- 截圖/快照按鈕 (照相機圖示描邊) -->
+      <button class="icon-action-btn" id="btn-snapshot" title="截取當前物理狀態與遙測分析報告">
+        <svg class="svg-draw-icon icon-camera" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
+          <circle cx="12" cy="13" r="4"></circle>
+        </svg>
+        <span>匯出快照</span>
+      </button>
+
+      <!-- 收藏星標按鈕 (彈跳與描邊) -->
+      <button class="icon-action-btn" id="btn-bookmark" title="收藏當前典型颱風物理案例">
+        <svg class="svg-draw-icon icon-star" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"></path>
+        </svg>
+        <span>標記案例</span>
+      </button>
+
+      <!-- 焚風剖面按鈕 (完成勾選描邊) -->
+      <button class="icon-action-btn" id="btn-profile-toggle" title="開啟東/西熱力學垂直剖面圖">
+        <svg class="svg-draw-icon icon-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="20 6 9 17 4 12"></polyline>
+        </svg>
+        <span>地形剖面分析</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- ==========================================================================
+       工作台主體區域 (Workbench Grid)
+       ========================================================================== -->
+  <main class="workbench-container">
+    
+    <!-- 左側面板：視角導航、案例選擇與可視化圖層開關 -->
+    <aside class="glass-panel panel-controls">
+      <div class="panel-title">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
+          <line x1="8" y1="21" x2="16" y2="21"></line>
+          <line x1="12" y1="17" x2="12" y2="21"></line>
+        </svg>
+        空間視角控制 (3D Perspective)
+      </div>
+
+      <!-- 視角模式切換 -->
+      <div class="view-mode-tabs">
+        <button class="view-tab-btn active" data-view="2d" id="tab-view-2d">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="2" x2="12" y2="22"></line><line x1="2" y1="12" x2="22" y2="12"></line></svg>
+          2D 平面俯視
+        </button>
+        <button class="view-tab-btn" data-view="isometric" id="tab-view-iso">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"></path></svg>
+          等角 3D 立體
+        </button>
+        <button class="view-tab-btn" data-view="profile" id="tab-view-prof">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
+          東西向垂直剖面
+        </button>
+      </div>
+
+      <div class="panel-title">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="10"></circle>
+          <polygon points="12 8 8 12 12 16 16 12 12 8"></polygon>
+        </svg>
+        歷史代表路徑案例
+      </div>
+
+      <!-- 典型路徑案例選擇 -->
+      <div class="case-selector-grid">
+        <div class="case-card active" data-case="pass-center">
+          <div class="case-info">
+            <h4>穿心颱（東部登陸 → 破壞過山）</h4>
+            <p>中央山脈強烈風切，環流低層中心分裂</p>
+          </div>
+          <span class="case-badge">典型登陸</span>
+        </div>
+        <div class="case-card" data-case="morakot">
+          <div class="case-info">
+            <h4>西南氣流共伴型（莫拉克型）</h4>
+            <p>暴風圈出海後引入南海豐沛水氣，中南部超大豪雨</p>
+          </div>
+          <span class="case-badge">西南氣流</span>
+        </div>
+        <div class="case-card" data-case="autumn-cooperation">
+          <div class="case-info">
+            <h4>秋颱共伴效應型（東北季風互動）</h4>
+            <p>外圍環流與冷高壓東北季風在東北角交會致災</p>
+          </div>
+          <span class="case-badge">秋季共伴</span>
+        </div>
+      </div>
+
+      <div class="panel-title">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
+          <polyline points="2 17 12 22 22 17"></polyline>
+          <polyline points="2 12 12 17 22 12"></polyline>
+        </svg>
+        物理圖層顯隱
+      </div>
+
+      <!-- 圖層開關 -->
+      <div class="layer-toggles-list">
+        <div class="layer-toggle-item checked" data-layer="wind-field">
+          <span>氣旋流線與角動量向量</span>
+          <div class="switch-indicator"><div class="switch-knob"></div></div>
+        </div>
+        <div class="layer-toggle-item checked" data-layer="terrain-elevation">
+          <span>中央山脈 3000m 等高線地形</span>
+          <div class="switch-indicator"><div class="switch-knob"></div></div>
+        </div>
+        <div class="layer-toggle-item checked" data-layer="precipitation">
+          <span>地形降雨雷達回波 (dBZ)</span>
+          <div class="switch-indicator"><div class="switch-knob"></div></div>
+        </div>
+        <div class="layer-toggle-item checked" data-layer="foehn">
+          <span>背風側焚風熱力區 (Foehn Wind)</span>
+          <div class="switch-indicator"><div class="switch-knob"></div></div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- 中間主要 3D / SVG 視區 (Simulation Arena) -->
+    <div class="simulation-arena" id="arena-container">
+      
+      <!-- 畫布 HUD 即時標籤 -->
+      <div class="arena-overlay-hud">
+        <div class="hud-tag">
+          中心座標: <span class="val" id="hud-latlng">23.8°N, 122.4°E</span>
+        </div>
+        <div class="hud-tag">
+          階段狀態: <span class="val" id="hud-stage-name">階段一：東部外海逼近</span>
+        </div>
+      </div>
+
+      <!-- 模組 1：輕量化規格演示與負載數據徽章（含現代響應式 picture 規格架構展示） -->
+      <div class="payload-stats-pill" title="純向量幾何節點 + 現代 picture 響應式 srcset 規範，加載節省率高達 90% 以上">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"></path></svg>
+        <span>Vector SVG Payload: 48KB (節省 92%)</span>
+      </div>
+
+      <!-- 模組 1 規格支援：現代 AVIF / WebP 高效多解析度 (1x/2x/3x) 點陣衛星雲圖背景優化規格 (純向量模式下做為大氣背景層) -->
+      <picture id="satellite-bg-picture" style="position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; opacity: 0.08; z-index: 1; mix-blend-mode: screen;">
+        <source type="image/avif" srcset="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='100' height='100'></svg> 1x, data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'></svg> 2x">
+        <source type="image/webp" srcset="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='100' height='100'></svg> 1x, data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'></svg> 2x">
+        <img src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='100' height='100'></svg>" alt="Himawari Satellite Atmospheric Cloud Deck" loading="lazy" style="width: 100%; height: 100%; object-fit: cover;">
+      </picture>
+
+      <!-- 圖例標籤 -->
+      <div class="radar-legend">
+        <span>降水強度:</span>
+        <div class="legend-bar"></div>
+        <span>40 ~ 120 mm/hr</span>
+      </div>
+
+      <!-- 3D 變換與旋轉包裹層 -->
+      <div class="viewport-3d-wrapper view-2d" id="viewport-3d">
+        
+        <!-- SVG 主畫布：包含台灣向量島嶼、中央山脈高程、颱風渦旋與氣壓場 -->
+        <svg class="simulation-canvas" id="main-svg" viewBox="0 0 800 700" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <!-- 降雨回波放射漸層 -->
+            <radialGradient id="rain-echo-grad" cx="50%" cy="50%" r="50%">
+              <stop offset="0%" stop-color="#ef4444" stop-opacity="0.85" />
+              <stop offset="40%" stop-color="#f97316" stop-opacity="0.65" />
+              <stop offset="70%" stop-color="#eab308" stop-opacity="0.4" />
+              <stop offset="100%" stop-color="#22c55e" stop-opacity="0" />
+            </radialGradient>
+
+            <!-- 焚風熱空氣漸層 -->
+            <radialGradient id="foehn-heat-grad" cx="50%" cy="50%" r="50%">
+              <stop offset="0%" stop-color="#f43f5e" stop-opacity="0.9" />
+              <stop offset="60%" stop-color="#fb923c" stop-opacity="0.5" />
+              <stop offset="100%" stop-color="#fbbf24" stop-opacity="0" />
+            </radialGradient>
+
+            <!-- 台灣山脈高度立體濾鏡 -->
+            <filter id="mountain-glow" x="-20%" y="-20%" width="140%" height="140%">
+              <feGaussianBlur in="SourceGraphic" stdDeviation="5" result="blur" />
+              <feMerge>
+                <feMergeNode in="blur" />
+                <feMergeNode in="SourceGraphic" />
+              </feMerge>
+            </filter>
+
+            <!-- 颱風眼發光濾鏡 -->
+            <filter id="eye-glow" x="-50%" y="-50%" width="200%" height="200%">
+              <feGaussianBlur in="SourceGraphic" stdDeviation="8" result="blur" />
+              <feMerge>
+                <feMergeNode in="blur" />
+                <feMergeNode in="SourceGraphic" />
+              </feMerge>
+            </filter>
+          </defs>
+
+          <!-- 1. 海洋背景網格與經緯線 -->
+          <g class="geo-grid" opacity="0.35">
+            <!-- 經線 -->
+            <line x1="200" y1="40" x2="200" y2="660" stroke="#38bdf8" stroke-dasharray="4 6" stroke-width="0.8" />
+            <line x1="380" y1="40" x2="380" y2="660" stroke="#38bdf8" stroke-dasharray="4 6" stroke-width="0.8" />
+            <line x1="560" y1="40" x2="560" y2="660" stroke="#38bdf8" stroke-dasharray="4 6" stroke-width="0.8" />
+            <!-- 緯線 -->
+            <line x1="60" y1="180" x2="740" y2="180" stroke="#38bdf8" stroke-dasharray="4 6" stroke-width="0.8" />
+            <line x1="60" y1="360" x2="740" y2="360" stroke="#38bdf8" stroke-dasharray="4 6" stroke-width="0.8" />
+            <line x1="60" y1="540" x2="740" y2="540" stroke="#38bdf8" stroke-dasharray="4 6" stroke-width="0.8" />
+            <!-- 經緯度標記 -->
+            <text x="205" y="60" fill="#64748b" font-size="11" font-family="monospace">120°E</text>
+            <text x="385" y="60" fill="#64748b" font-size="11" font-family="monospace">121°E</text>
+            <text x="565" y="60" fill="#64748b" font-size="11" font-family="monospace">122°E</text>
+            <text x="75" y="175" fill="#64748b" font-size="11" font-family="monospace">25°N (基隆/富貴角)</text>
+            <text x="75" y="355" fill="#64748b" font-size="11" font-family="monospace">23.5°N (北回歸線)</text>
+            <text x="75" y="535" fill="#64748b" font-size="11" font-family="monospace">22°N (恆春/鵝鑾鼻)</text>
+          </g>
+
+          <!-- 2. 颱風歷史預測路徑線 (Stroke Dashoffset 向量動態描邊) -->
+          <g id="typhoon-track-group">
+            <path id="typhoon-trajectory-path" class="track-path-line" d="M 720 480 C 620 440, 520 380, 410 350 C 330 325, 250 270, 160 210" />
+            <!-- 歷程節點標註 -->
+            <circle cx="720" cy="480" r="5" fill="#f43f5e" />
+            <circle cx="410" cy="350" r="5" fill="#fbbf24" />
+            <circle cx="160" cy="210" r="5" fill="#38bdf8" />
+          </g>
+
+          <!-- 3. 台灣本島向量幾何輪廓與地形 (依地理坐標精確幾何化描繪) -->
+          <g id="taiwan-island-group" transform="translate(0, 0)">
+            <!-- 台灣海岸線多邊形 -->
+            <path id="taiwan-coastline" d="
+              M 370 120 
+              C 390 128, 415 145, 425 170
+              C 435 210, 420 260, 410 310
+              C 405 350, 400 400, 395 450
+              C 390 500, 375 550, 355 585
+              C 345 600, 340 605, 335 595
+              C 330 575, 320 540, 310 500
+              C 295 440, 280 380, 285 330
+              C 290 280, 305 240, 320 190
+              C 330 155, 350 130, 370 120 Z" 
+              fill="#0f172a" 
+              stroke="#38bdf8" 
+              stroke-width="2.5" 
+              filter="drop-shadow(0 8px 16px rgba(0, 0, 0, 0.6))" />
+
+            <!-- 台灣地形基底陰影層 (營造 3D 陸塊厚度) -->
+            <path d="
+              M 370 120 
+              C 390 128, 415 145, 425 170
+              C 435 210, 420 260, 410 310
+              C 405 350, 400 400, 395 450
+              C 390 500, 375 550, 355 585
+              L 355 600 C 375 565, 390 515, 395 465 C 400 415, 405 365, 410 325 C 420 275, 435 225, 425 185 Z"
+              fill="#082f49" opacity="0.7" />
+
+            <!-- 中央山脈 1000m 等高線群 (護國神山地形抬升屏障) -->
+            <g id="layer-terrain" class="mountain-extrusion">
+              <!-- 1000m 稜線基底 -->
+              <path d="M 380 180 C 390 230, 385 300, 375 370 C 365 440, 355 510, 340 550 C 330 520, 335 450, 345 380 C 355 310, 365 240, 370 190 Z" 
+                    fill="#1e293b" stroke="#0ea5e9" stroke-width="1.2" opacity="0.8" />
+              <!-- 2000m 亞高山山脈脊樑 -->
+              <path d="M 382 220 C 388 270, 382 330, 372 400 C 362 460, 352 500, 345 520 C 340 480, 346 420, 354 360 C 362 300, 372 250, 376 225 Z" 
+                    fill="#334155" stroke="#38bdf8" stroke-width="1.4" opacity="0.9" />
+              <!-- 3000m+ 玉山/雪山/中央山脈主脊 (最高峰 3952m) -->
+              <path d="M 378 260 C 382 300, 378 350, 370 410 C 364 450, 358 480, 352 490 C 348 460, 352 420, 358 370 C 364 320, 370 280, 374 265 Z" 
+                    fill="#475569" stroke="#7dd3fc" stroke-width="1.8" filter="url(#mountain-glow)" />
+
+              <!-- 地名與地標標籤 -->
+              <text x="382" y="340" fill="#bae6fd" font-size="11" font-weight="700">中央山脈 (3000m+)</text>
+              <text x="330" y="380" fill="#94a3b8" font-size="10">玉山 3952m</text>
+              <text x="350" y="240" fill="#94a3b8" font-size="10">雪山 3886m</text>
+              <text x="375" y="520" fill="#94a3b8" font-size="10">南橫向陽山</text>
+            </g>
+
+            <!-- 西部平原與東部縱谷標籤 -->
+            <text x="250" y="380" fill="#64748b" font-size="11">嘉南平原 (背風區)</text>
+            <text x="425" y="380" fill="#64748b" font-size="11">花東縱谷 (迎風面)</text>
+          </g>
+
+          <!-- 4. 地形降雨回波層 (迎風面地形強迫抬升產生劇烈對流胞) -->
+          <g id="layer-precipitation" opacity="0.85">
+            <!-- 東部迎風坡地形雨胞 (階段二極大化) -->
+            <ellipse id="east-rain-cell" cx="400" cy="360" rx="45" ry="80" fill="url(#rain-echo-grad)" />
+            <!-- 南部山區西南氣流雨胞 (階段四極大化) -->
+            <ellipse id="south-rain-cell" cx="340" cy="480" rx="55" ry="65" fill="url(#rain-echo-grad)" opacity="0.2" />
+          </g>
+
+          <!-- 5. 背風側焚風熱浪噴發區 (西側苗栗/台中/台東下沉增溫) -->
+          <g id="layer-foehn" class="foehn-burst">
+            <ellipse id="foehn-bubble" cx="295" cy="330" rx="35" ry="50" fill="url(#foehn-heat-grad)" />
+            <text id="foehn-text" x="245" y="315" fill="#f43f5e" font-size="12" font-weight="bold" filter="drop-shadow(0 0 4px #000)">
+              🔥 焚風異常 37.8°C
+            </text>
+          </g>
+
+          <!-- 6. 颱風渦旋實體系統 (動態跟隨時間軸位置) -->
+          <g id="typhoon-vortex" transform="translate(720, 480)">
+            <!-- 等壓線環圈 (Isobars) -->
+            <circle class="isobar-ring" r="180" />
+            <circle class="isobar-ring" r="130" />
+            <circle class="isobar-ring" r="85" />
+            <circle class="isobar-ring" r="45" />
+
+            <!-- 氣旋螺旋對流雨帶 (Logarithmic Rainbands) -->
+            <g id="rainbands-group">
+              <path class="wind-streamline" d="M 0 0 C 40 30, 90 90, 160 110" />
+              <path class="wind-streamline" d="M 0 0 C -30 50, -80 100, -140 130" />
+              <path class="wind-streamline" d="M 0 0 C -50 -30, -110 -70, -170 -60" />
+              <path class="wind-streamline" d="M 0 0 C 30 -60, 70 -120, 130 -140" />
+            </g>
+
+            <!-- 密集風場逆時針流線群 -->
+            <g id="layer-wind-field">
+              <circle cx="0" cy="0" r="110" fill="none" stroke="rgba(56, 189, 248, 0.35)" stroke-width="1.5" stroke-dasharray="14 10" class="wind-streamline" />
+              <circle cx="0" cy="0" r="70" fill="none" stroke="rgba(56, 189, 248, 0.55)" stroke-width="2" stroke-dasharray="10 8" class="wind-streamline" style="animation-duration: 1.1s;" />
+              <circle cx="0" cy="0" r="35" fill="none" stroke="rgba(244, 63, 94, 0.7)" stroke-width="2.5" stroke-dasharray="8 6" class="wind-streamline" style="animation-duration: 0.7s;" />
+            </g>
+
+            <!-- 颱風眼牆 Convective Eyewall -->
+            <circle cx="0" cy="0" r="22" fill="rgba(244, 63, 94, 0.25)" stroke="#f43f5e" stroke-width="3" filter="url(#eye-glow)" />
+
+            <!-- 颱風眼中心 Eye Center (平靜下沉氣流區) -->
+            <circle id="typhoon-eye-center" cx="0" cy="0" r="8" fill="#ffffff" filter="drop-shadow(0 0 8px #ffffff)" />
+            <text x="14" y="5" fill="#f8fafc" font-size="12" font-weight="700" font-family="monospace">颱風眼 (EYE)</text>
+          </g>
+
+          <!-- 7. 副低壓與環流分裂標註 (當颱風撞擊中央山脈時觸發) -->
+          <g id="secondary-low-vortex" opacity="0" transform="translate(290, 410)">
+            <circle cx="0" cy="0" r="28" fill="none" stroke="#fbbf24" stroke-width="2" stroke-dasharray="6 4" class="wind-streamline" />
+            <circle cx="0" cy="0" r="4" fill="#fbbf24" />
+            <text x="12" y="4" fill="#fbbf24" font-size="11" font-weight="bold">副低壓生成 (Secondary Vortex)</text>
+          </g>
+        </svg>
+
+      </div>
+
+      <!-- 東西向垂直剖面圖疊層 (Cross-Section Modal View) -->
+      <div class="cross-section-overlay" id="cross-section-modal">
+        <div class="cross-section-header">
+          <h3>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 17l6-6 4 4 8-8"></path></svg>
+            中央山脈熱力學垂直剖面：地形雨與背風焚風機制
+          </h3>
+          <button class="cross-close-btn" id="btn-close-cross">關閉剖面 ✕</button>
+        </div>
+
+        <svg viewBox="0 0 740 380" style="width: 100%; height: 100%;" xmlns="http://www.w3.org/2000/svg">
+          <!-- 海平面線與基底 -->
+          <line x1="40" y1="320" x2="700" y2="320" stroke="#38bdf8" stroke-width="2" />
+          <text x="40" y="340" fill="#94a3b8" font-size="12">台灣海峽 (西側)</text>
+          <text x="630" y="340" fill="#94a3b8" font-size="12">太平洋 (東側)</text>
+
+          <!-- 中央山脈剖面幾何體 (3000m 高度) -->
+          <polygon points="120,320 280,320 380,80 440,80 500,240 580,320" fill="#1e293b" stroke="#38bdf8" stroke-width="2" />
+          <!-- 玉山主峰標示 -->
+          <line x1="410" y1="80" x2="410" y2="50" stroke="#f59e0b" stroke-dasharray="3 3" />
+          <text x="360" y="45" fill="#f59e0b" font-size="12" font-weight="bold">中央山脈脊樑 (3952m)</text>
+
+          <!-- 東側：暖濕空氣被迫抬升 (濕絕熱冷卻 0.6°C / 100m) -->
+          <g class="cross-wind-east">
+            <path d="M 640 280 C 580 260, 520 200, 460 130" fill="none" stroke="#38bdf8" stroke-width="4" stroke-dasharray="10 6" class="wind-streamline" />
+            <text x="540" y="220" fill="#7dd3fc" font-size="11">迎風面強迫抬升</text>
+            <text x="540" y="240" fill="#94a3b8" font-size="10">水氣凝結飽和 (降溫 0.6°C/100m)</text>
+
+            <!-- 濃密雨雲與豪雨柱 -->
+            <ellipse cx="480" cy="140" rx="60" ry="25" fill="#334155" opacity="0.85" />
+            <ellipse cx="510" cy="130" rx="45" ry="30" fill="#475569" opacity="0.9" />
+            <!-- 雨絲 -->
+            <line x1="460" y1="170" x2="450" y2="240" stroke="#38bdf8" stroke-width="2" stroke-dasharray="4 6" />
+            <line x1="490" y1="170" x2="480" y2="250" stroke="#38bdf8" stroke-width="2" stroke-dasharray="4 6" />
+            <line x1="520" y1="170" x2="510" y2="240" stroke="#38bdf8" stroke-width="2" stroke-dasharray="4 6" />
+            <text x="450" y="270" fill="#38bdf8" font-size="13" font-weight="bold">🌧️ 極端地形雨 (400mm+)</text>
+          </g>
+
+          <!-- 西側：乾燥空氣越嶺下沉 (乾絕熱增溫 1.0°C / 100m) -->
+          <g class="cross-wind-west">
+            <path d="M 370 120 C 320 180, 260 250, 180 290" fill="none" stroke="#f43f5e" stroke-width="4" stroke-dasharray="10 6" class="wind-streamline" />
+            <text x="220" y="190" fill="#fb7185" font-size="11">越嶺下沉空氣 (水氣已失)</text>
+            <text x="210" y="210" fill="#fca5a5" font-size="10">乾絕熱壓縮升溫 (增溫 1.0°C/100m)</text>
+
+            <rect x="130" y="255" width="130" height="40" rx="8" fill="rgba(244, 63, 94, 0.2)" stroke="#f43f5e" />
+            <text x="145" y="280" fill="#f43f5e" font-size="13" font-weight="bold">🔥 焚風效應 37.5°C</text>
+          </g>
+        </svg>
+      </div>
+
+    </div>
+
+    <!-- 右側面板：即時遙測儀表板與物理力學解析 -->
+    <aside class="glass-panel panel-telemetry">
+      <div class="panel-title">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M22 12h-4l-3 9L9 3l-3 9H2"></path>
+        </svg>
+        颱風遙測實時數據 (Telemetry)
+      </div>
+
+      <!-- 遙測數值卡片矩陣 -->
+      <div class="telemetry-grid">
+        <div class="telemetry-card">
+          <span class="label">中心氣壓 (Pressure)</span>
+          <div class="value"><span id="val-pressure">935</span><span class="unit">hPa</span></div>
+        </div>
+        <div class="telemetry-card">
+          <span class="label">最大陣風 (Wind Speed)</span>
+          <div class="value"><span id="val-wind">53.0</span><span class="unit">m/s</span></div>
+        </div>
+        <div class="telemetry-card">
+          <span class="label">24h 累積雨量 (Rainfall)</span>
+          <div class="value"><span id="val-rain">180</span><span class="unit">mm</span></div>
+        </div>
+        <div class="telemetry-card">
+          <span class="label">背風側測站最高溫</span>
+          <div class="value"><span id="val-temp" style="color: var(--accent-rose);">31.2</span><span class="unit">°C</span></div>
+        </div>
+      </div>
+
+      <!-- 警示橫幅 (隨階段動態變化) -->
+      <div class="warning-banner" id="warning-banner">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+          <line x1="12" y1="9" x2="12" y2="13"></line>
+          <line x1="12" y1="17" x2="12.01" y2="17"></line>
+        </svg>
+        <div class="text" id="warning-text">
+          海上警報發布中：颱風眼外圍對流雲系正接觸東部沿海，長浪湧升。
+        </div>
+      </div>
+
+      <!-- 核心物理原理解析卡片 -->
+      <div class="science-card">
+        <h4>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
+          中央山脈四重關鍵影響原理
+        </h4>
+        <p id="science-desc">
+          當颱風逼近台灣，高達 3000 公尺的中央山脈形成強大天然氣動力屏障。迎風側受山勢攔截強迫抬升形成極端降雨，而背風側因越嶺下沉乾絕熱增溫引發焚風現象。
+        </p>
+
+        <!-- 階段追蹤清單 -->
+        <div class="mechanism-steps">
+          <div class="mechanism-step-item active" id="step-1">1. 外圍環流與東部地形初始抬升</div>
+          <div class="mechanism-step-item" id="step-2">2. 眼牆撞擊、氣壓填塞與背風焚風</div>
+          <div class="mechanism-step-item" id="step-3">3. 垂直風切破壞環流與副低壓分裂</div>
+          <div class="mechanism-step-item" id="step-4">4. 西移出海與西南氣流拖曳大豪雨</div>
+        </div>
+      </div>
+    </aside>
+
+  </main>
+
+  <!-- ==========================================================================
+       底部播放與時間軸控制台 (Timeline Scrubber)
+       ========================================================================== -->
+  <footer class="timeline-footer">
+    <div class="timeline-controls-row">
+      <!-- 播放控制按鈕組 -->
+      <div class="playback-btn-group">
+        <button class="small-ctrl-btn" id="btn-step-prev" title="前一物理階段">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="2"><polygon points="19 20 9 12 19 4 19 20"></polygon><line x1="5" y1="19" x2="5" y2="5"></line></svg>
+        </button>
+        <button class="play-btn" id="btn-play" title="播放 / 暫停模擬">
+          <svg id="play-icon" viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+        </button>
+        <button class="small-ctrl-btn" id="btn-step-next" title="下一物理階段">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="2"><polygon points="5 4 15 12 5 20 5 4"></polygon><line x1="19" y1="5" x2="19" y2="19"></line></svg>
+        </button>
+      </div>
+
+      <!-- 時間軸滑軌 (Scrubber) -->
+      <div class="scrubber-track-container">
+        <div class="stage-milestones">
+          <span class="stage-tick active" data-progress="0">T+0h 逼近階段</span>
+          <span class="stage-tick" data-progress="35">T+12h 登陸與地形抬升</span>
+          <span class="stage-tick" data-progress="68">T+24h 山脈破壞與環流分裂</span>
+          <span class="stage-tick" data-progress="100">T+36h 出海與西南氣流</span>
+        </div>
+        <input type="range" id="timeline-scrubber" class="scrubber-input" min="0" max="100" value="0" step="0.5">
+      </div>
+
+      <!-- Web Audio API 原生音效合成開關 -->
+      <button class="audio-toggle-btn sound-on" id="btn-sound-toggle" title="原生 Web Audio API 合成音效開關">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" id="sound-icon">
+          <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+          <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path>
+        </svg>
+        <span id="sound-label">音效開啟</span>
+      </button>
+    </div>
+  </footer>
+
+  <!-- 吐司提示訊息 -->
+  <div class="toast-notification" id="toast-msg">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg>
+    <span id="toast-text">已成功快照當前氣象物理場與遙測數據！</span>
+  </div>
+
+  <!-- ==========================================================================
+       JavaScript 核心引擎 (Web Audio API + 60fps rAF + 物理動力學)
+       ========================================================================== -->
+  <script>
+    /**
+     * ==========================================================================
+     * 模組 3：原生 Web Audio API 微互動音效合成引擎 (零外部依賴)
+     * ==========================================================================
+     */
+    class AudioSynthesisEngine {
+      constructor() {
+        this.ctx = null;
+        this.enabled = true;
+        this.windGain = null;
+        this.windFilter = null;
+      }
+
+      initContext() {
+        if (!this.ctx) {
+          const AudioContext = window.AudioContext || window.webkitAudioContext;
+          this.ctx = new AudioContext();
+          this.initWindDrone();
+        }
+        if (this.ctx.state === 'suspended') {
+          this.ctx.resume();
+        }
+      }
+
+      // 1. 輕脆按鈕點擊聲 (Crisp Click)
+      playClick() {
+        if (!this.enabled) return;
+        this.initContext();
+        const now = this.ctx.currentTime;
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(1400, now);
+        osc.frequency.exponentialRampToValueAtTime(350, now + 0.04);
+
+        gain.gain.setValueAtTime(0.2, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.04);
+
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+
+        osc.start(now);
+        osc.stop(now + 0.045);
+      }
+
+      // 2. 時間軸齒輪吸附聲 (Detent Snap / Tick)
+      playSnap() {
+        if (!this.enabled) return;
+        this.initContext();
+        const now = this.ctx.currentTime;
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(520, now);
+        osc.frequency.exponentialRampToValueAtTime(180, now + 0.025);
+
+        gain.gain.setValueAtTime(0.12, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.025);
+
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+
+        osc.start(now);
+        osc.stop(now + 0.03);
+      }
+
+      // 3. 成功 / 階段切換和弦音 (Success Chord)
+      playChord() {
+        if (!this.enabled) return;
+        this.initContext();
+        const now = this.ctx.currentTime;
+        const freqs = [523.25, 659.25, 783.99, 1046.50]; // C5, E5, G5, C6 和弦
+
+        freqs.forEach((freq, idx) => {
+          const osc = this.ctx.createOscillator();
+          const gain = this.ctx.createGain();
+
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(freq, now + idx * 0.03);
+
+          gain.gain.setValueAtTime(0.08, now + idx * 0.03);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + 0.45 + idx * 0.03);
+
+          osc.connect(gain);
+          gain.connect(this.ctx.destination);
+
+          osc.start(now + idx * 0.03);
+          osc.stop(now + 0.5 + idx * 0.03);
+        });
+      }
+
+      // 4. 動態颱風風聲底噪合成 (Pink / White Noise via Web Audio Buffer)
+      initWindDrone() {
+        try {
+          const bufferSize = this.ctx.sampleRate * 2;
+          const noiseBuffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+          const output = noiseBuffer.getChannelData(0);
+          let b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0, b6 = 0;
+
+          // 生成粉紅噪聲 (Pink Noise) 更加貼近真實呼嘯風聲
+          for (let i = 0; i < bufferSize; i++) {
+            const white = Math.random() * 2 - 1;
+            b0 = 0.99886 * b0 + white * 0.0555179;
+            b1 = 0.99332 * b1 + white * 0.0750759;
+            b2 = 0.96900 * b2 + white * 0.1538520;
+            b3 = 0.86650 * b3 + white * 0.3104856;
+            b4 = 0.55000 * b4 + white * 0.5329522;
+            b5 = -0.7616 * b5 - white * 0.0168980;
+            output[i] = (b0 + b1 + b2 + b3 + b4 + b5 + b6 + white * 0.5362) * 0.06;
+            b6 = white * 0.115926;
+          }
+
+          const whiteNoise = this.ctx.createBufferSource();
+          whiteNoise.buffer = noiseBuffer;
+          whiteNoise.loop = true;
+
+          // 帶通濾波器模擬風聲呼嘯
+          this.windFilter = this.ctx.createBiquadFilter();
+          this.windFilter.type = 'bandpass';
+          this.windFilter.frequency.setValueAtTime(320, this.ctx.currentTime);
+          this.windFilter.Q.setValueAtTime(2.2, this.ctx.currentTime);
+
+          this.windGain = this.ctx.createGain();
+          this.windGain.gain.setValueAtTime(0.015, this.ctx.currentTime);
+
+          whiteNoise.connect(this.windFilter);
+          this.windFilter.connect(this.windGain);
+          this.windGain.connect(this.ctx.destination);
+
+          whiteNoise.start();
+        } catch (e) {
+          console.warn("Wind noise audio buffer init skipped:", e);
+        }
+      }
+
+      // 隨颱風風速動態調節風聲音量與中心頻率
+      updateWindIntensity(speedFraction) {
+        if (!this.windGain || !this.windFilter || !this.enabled) return;
+        const now = this.ctx.currentTime;
+        const targetVol = 0.01 + speedFraction * 0.06;
+        const targetFreq = 220 + speedFraction * 480;
+        this.windGain.gain.setTargetAtTime(targetVol, now, 0.1);
+        this.windFilter.frequency.setTargetAtTime(targetFreq, now, 0.1);
+      }
+
+      toggleAudio() {
+        this.enabled = !this.enabled;
+        if (this.windGain) {
+          this.windGain.gain.setValueAtTime(this.enabled ? 0.02 : 0.0001, this.ctx?.currentTime || 0);
+        }
+        return this.enabled;
+      }
+    }
+
+    const sound = new AudioSynthesisEngine();
+
+    /**
+     * ==========================================================================
+     * 颱風物理狀態機與數據插值 (Meteorological State & Dynamics Engine)
+     * ==========================================================================
+     */
+    const STAGES_DATA = [
+      {
+        progress: 0,
+        name: "階段一：東部外海逼近 (外圍環流與長浪)",
+        pos: { x: 720, y: 480 },
+        latlng: "22.2°N, 124.6°E",
+        pressure: 935,
+        wind: 53.0,
+        rain: 95,
+        temp: 30.5,
+        eastRainScale: 0.35,
+        southRainScale: 0.1,
+        foehnOpacity: 0,
+        secondaryVortex: 0,
+        warning: "海上颱風警報發布中：暴風圈正接近花東沿海，東半部有長浪與局部間歇豪雨。",
+        science: "颱風外圍強風帶正吹襲東部海岸。此時迎風側（宜蘭、花蓮）開始受中央山脈地形初始抬升影響，產生第一波對流降雨；氣壓梯度逐漸緊縮。"
+      },
+      {
+        progress: 35,
+        name: "階段二：東部登陸與山脈抬升 (暴雨與背風焚風)",
+        pos: { x: 440, y: 360 },
+        latlng: "23.4°N, 121.6°E",
+        pressure: 948,
+        wind: 48.0,
+        rain: 450,
+        temp: 37.8,
+        eastRainScale: 1.0,
+        southRainScale: 0.4,
+        foehnOpacity: 1.0,
+        secondaryVortex: 0.2,
+        warning: "陸上颱風警報：颱風眼登陸花蓮/台東！花東山區極端豪雨，苗栗及台中地區出現 37.8°C 焚風！",
+        science: "【核心物理：迎風地形雨與背風焚風】東部暖濕氣流撞擊 3000m 中央山脈，以濕絕熱遞減率 (0.6°C/100m) 降溫凝結致暴雨；空氣翻越山頂後水氣耗盡，沿西坡下沉以乾絕熱遞減率 (1.0°C/100m) 強烈壓縮增溫，產生高溫乾燥之焚風。"
+      },
+      {
+        progress: 68,
+        name: "階段三：護國神山破壞與環流分裂 (副低壓生成)",
+        pos: { x: 340, y: 310 },
+        latlng: "24.1°N, 120.8°E",
+        pressure: 968,
+        wind: 35.0,
+        rain: 680,
+        temp: 33.2,
+        eastRainScale: 0.6,
+        southRainScale: 0.75,
+        foehnOpacity: 0.25,
+        secondaryVortex: 1.0,
+        warning: "結構破壞：中央山脈破壞低層氣旋結構，中心眼牆消散填塞，西側平原誘發副低壓！",
+        science: "【核心物理：垂直風切與副低壓分裂】中央山脈高聳地形切斷颱風底層暖濕能量供應，摩擦消耗使中心填塞減弱；同時強烈氣流繞過山脈在台灣西側背風海面形成低壓渦旋（副低壓），使中心出現跳躍現象。"
+      },
+      {
+        progress: 100,
+        name: "階段四：西移出海與西南氣流引入 (中南部超大豪雨)",
+        pos: { x: 160, y: 210 },
+        latlng: "25.2°N, 119.0°E",
+        pressure: 978,
+        wind: 28.0,
+        rain: 980,
+        temp: 29.8,
+        eastRainScale: 0.2,
+        southRainScale: 1.0,
+        foehnOpacity: 0,
+        secondaryVortex: 0,
+        warning: "西南氣流嚴防致災！颱風進入海峽北上，逆時針拖曳南海豐沛水氣撞擊南部阿里山/屏東山區！",
+        science: "【核心物理：莫拉克型西南氣流拖曳】颱風中心出海後，逆時針環流與夏季西南季風輻合，形成源源不絕的強烈西南氣流。高濕氣流正對南部山區地形直衝抬升，降雨重心轉移至高屏山區與阿里山，累積超大豪雨。"
+      }
+    ];
+
+    /**
+     * ==========================================================================
+     * 應用程式控制與 DOM 交互
+     * ==========================================================================
+     */
+    const DOM = {
+      viewport3d: document.getElementById('viewport-3d'),
+      mainSvg: document.getElementById('main-svg'),
+      scrubber: document.getElementById('timeline-scrubber'),
+      btnPlay: document.getElementById('btn-play'),
+      playIcon: document.getElementById('play-icon'),
+      btnPrev: document.getElementById('btn-step-prev'),
+      btnNext: document.getElementById('btn-step-next'),
+      btnSound: document.getElementById('btn-sound-toggle'),
+      soundLabel: document.getElementById('sound-label'),
+      btnSnapshot: document.getElementById('btn-snapshot'),
+      btnBookmark: document.getElementById('btn-bookmark'),
+      btnProfileToggle: document.getElementById('btn-profile-toggle'),
+      crossSectionModal: document.getElementById('cross-section-modal'),
+      btnCloseCross: document.getElementById('btn-close-cross'),
+      toast: document.getElementById('toast-msg'),
+      toastText: document.getElementById('toast-text'),
+
+      // HUD & Telemetry
+      hudLatLng: document.getElementById('hud-latlng'),
+      hudStageName: document.getElementById('hud-stage-name'),
+      valPressure: document.getElementById('val-pressure'),
+      valWind: document.getElementById('val-wind'),
+      valRain: document.getElementById('val-rain'),
+      valTemp: document.getElementById('val-temp'),
+      warningText: document.getElementById('warning-text'),
+      scienceDesc: document.getElementById('science-desc'),
+
+      // SVG Elements
+      typhoonVortex: document.getElementById('typhoon-vortex'),
+      eastRainCell: document.getElementById('east-rain-cell'),
+      southRainCell: document.getElementById('south-rain-cell'),
+      foehnBubble: document.getElementById('layer-foehn'),
+      secondaryVortex: document.getElementById('secondary-low-vortex'),
+      trajectoryPath: document.getElementById('typhoon-trajectory-path')
+    };
+
+    // 狀態變數
+    let currentProgress = 0;
+    let isPlaying = false;
+    let lastTimestamp = 0;
+    const playSpeed = 12; // 每一秒推進約 12% 進度
+    let lastSnapStep = -1;
+
+    // 線性插值輔助函式
+    function lerp(start, end, t) {
+      return start + (end - start) * t;
+    }
+
+    // 依據進度計算兩階段間的插值物理狀態
+    function interpolateState(prog) {
+      let stageIdx = 0;
+      for (let i = 0; i < STAGES_DATA.length - 1; i++) {
+        if (prog >= STAGES_DATA[i].progress && prog <= STAGES_DATA[i + 1].progress) {
+          stageIdx = i;
+          break;
+        }
+      }
+      if (prog >= 100) stageIdx = STAGES_DATA.length - 2;
+
+      const sA = STAGES_DATA[stageIdx];
+      const sB = STAGES_DATA[stageIdx + 1];
+      const range = sB.progress - sA.progress;
+      const t = range === 0 ? 0 : Math.max(0, Math.min(1, (prog - sA.progress) / range));
+
+      return {
+        stageIdx,
+        t,
+        x: lerp(sA.pos.x, sB.pos.x, t),
+        y: lerp(sA.pos.y, sB.pos.y, t),
+        pressure: Math.round(lerp(sA.pressure, sB.pressure, t)),
+        wind: (lerp(sA.wind, sB.wind, t)).toFixed(1),
+        rain: Math.round(lerp(sA.rain, sB.rain, t)),
+        temp: (lerp(sA.temp, sB.temp, t)).toFixed(1),
+        eastRain: lerp(sA.eastRainScale, sB.eastRainScale, t),
+        southRain: lerp(sA.southRainScale, sB.southRainScale, t),
+        foehn: lerp(sA.foehnOpacity, sB.foehnOpacity, t),
+        secondaryVortex: lerp(sA.secondaryVortex, sB.secondaryVortex, t),
+        currentStage: t > 0.5 ? sB : sA
+      };
+    }
+
+    // 更新介面與 SVG 節點狀態 (高效無 layout-thrashing)
+    function renderState(prog) {
+      const state = interpolateState(prog);
+
+      // 1. 移動颱風中心渦旋
+      DOM.typhoonVortex.setAttribute('transform', `translate(${state.x}, ${state.y})`);
+
+      // 2. 迎風雨胞與西南氣流降雨強度
+      DOM.eastRainCell.style.opacity = state.eastRain;
+      DOM.southRainCell.style.opacity = state.southRain;
+
+      // 3. 焚風熱區顯示與警報
+      DOM.foehnBubble.style.opacity = state.foehn;
+
+      // 4. 副低壓顯隱
+      DOM.secondaryVortex.style.opacity = state.secondaryVortex;
+
+      // 5. 遙測數值同步
+      DOM.valPressure.textContent = state.pressure;
+      DOM.valWind.textContent = state.wind;
+      DOM.valRain.textContent = state.rain;
+      DOM.valTemp.textContent = state.temp;
+      DOM.hudLatLng.textContent = state.currentStage.latlng;
+      DOM.hudStageName.textContent = state.currentStage.name;
+      DOM.warningText.textContent = state.currentStage.warning;
+      DOM.scienceDesc.textContent = state.currentStage.science;
+
+      // 6. 時間軸齒輪吸附音效觸發 (當穿越 0, 35, 68, 100 附近時)
+      const currentSnap = STAGES_DATA.findIndex(s => Math.abs(s.progress - prog) < 1.5);
+      if (currentSnap !== -1 && currentSnap !== lastSnapStep) {
+        lastSnapStep = currentSnap;
+        sound.playSnap();
+      } else if (currentSnap === -1) {
+        lastSnapStep = -1;
+      }
+
+      // 7. 同步更新風聲合成強度
+      const windFrac = (parseFloat(state.wind) - 25) / 30; // 0.0 ~ 1.0
+      sound.updateWindIntensity(Math.max(0, windFrac));
+
+      // 8. 側邊階段高亮狀態更新
+      for (let i = 1; i <= 4; i++) {
+        const stepEl = document.getElementById(`step-${i}`);
+        if (stepEl) {
+          stepEl.classList.toggle('active', i - 1 === state.stageIdx);
+        }
+      }
+
+      // 9. 更新時間軸下方的進度刻度樣式
+      document.querySelectorAll('.stage-tick').forEach(tick => {
+        const p = parseFloat(tick.getAttribute('data-progress'));
+        tick.classList.toggle('active', Math.abs(p - prog) < 16);
+      });
+
+      // 10. 更新滑桿背景漸變填充
+      DOM.scrubber.style.background = `linear-gradient(to right, var(--accent-cyan) 0%, var(--accent-cyan) ${prog}%, rgba(255, 255, 255, 0.1) ${prog}%, rgba(255, 255, 255, 0.1) 100%)`;
+    }
+
+    /**
+     * ==========================================================================
+     * 60 FPS 動態更新迴圈 (requestAnimationFrame)
+     * ==========================================================================
+     */
+    function animationLoop(timestamp) {
+      if (!lastTimestamp) lastTimestamp = timestamp;
+      const deltaTime = (timestamp - lastTimestamp) / 1000;
+      lastTimestamp = timestamp;
+
+      if (isPlaying) {
+        currentProgress += playSpeed * deltaTime;
+        if (currentProgress >= 100) {
+          currentProgress = 100;
+          pauseSimulation();
+          sound.playChord();
+        }
+        DOM.scrubber.value = currentProgress;
+        renderState(currentProgress);
+      }
+
+      requestAnimationFrame(animationLoop);
+    }
+    requestAnimationFrame(animationLoop);
+
+    function playSimulation() {
+      isPlaying = true;
+      sound.playClick();
+      DOM.playIcon.innerHTML = `<rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect>`;
+    }
+
+    function pauseSimulation() {
+      isPlaying = false;
+      DOM.playIcon.innerHTML = `<polygon points="5 3 19 12 5 21 5 3"></polygon>`;
+    }
+
+    function showToast(message) {
+      DOM.toastText.textContent = message;
+      DOM.toast.classList.add('show');
+      sound.playChord();
+      setTimeout(() => {
+        DOM.toast.classList.remove('show');
+      }, 3200);
+    }
+
+    // 事件監聽綁定
+    DOM.btnPlay.addEventListener('click', () => {
+      if (isPlaying) {
+        pauseSimulation();
+        sound.playClick();
+      } else {
+        if (currentProgress >= 100) currentProgress = 0;
+        playSimulation();
+      }
+    });
+
+    DOM.scrubber.addEventListener('input', (e) => {
+      currentProgress = parseFloat(e.target.value);
+      renderState(currentProgress);
+    });
+
+    // 階段前後切換按鈕
+    DOM.btnPrev.addEventListener('click', () => {
+      sound.playClick();
+      let currentIdx = -1;
+      for (let i = STAGES_DATA.length - 1; i >= 0; i--) {
+        if (STAGES_DATA[i].progress < currentProgress - 1) {
+          currentIdx = i;
+          break;
+        }
+      }
+      currentProgress = currentIdx >= 0 ? STAGES_DATA[currentIdx].progress : 0;
+      DOM.scrubber.value = currentProgress;
+      renderState(currentProgress);
+    });
+
+    DOM.btnNext.addEventListener('click', () => {
+      sound.playClick();
+      const nextStage = STAGES_DATA.find(s => s.progress > currentProgress + 1);
+      currentProgress = nextStage ? nextStage.progress : 100;
+      DOM.scrubber.value = currentProgress;
+      renderState(currentProgress);
+    });
+
+    // 點擊時間軸上的刻度直接跳躍
+    document.querySelectorAll('.stage-tick').forEach(tick => {
+      tick.addEventListener('click', () => {
+        sound.playSnap();
+        currentProgress = parseFloat(tick.getAttribute('data-progress'));
+        DOM.scrubber.value = currentProgress;
+        renderState(currentProgress);
+      });
+    });
+
+    // 音效開關切換
+    DOM.btnSound.addEventListener('click', () => {
+      const isEnabled = sound.toggleAudio();
+      DOM.btnSound.classList.toggle('sound-on', isEnabled);
+      DOM.soundLabel.textContent = isEnabled ? "音效開啟" : "音效靜音";
+      if (isEnabled) sound.playClick();
+    });
+
+    // 視角切換器 (2D / Isometric 3D / Profile)
+    document.querySelectorAll('.view-tab-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        sound.playClick();
+        document.querySelectorAll('.view-tab-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+
+        const view = btn.getAttribute('data-view');
+        DOM.viewport3d.className = `viewport-3d-wrapper view-${view}`;
+
+        if (view === 'profile') {
+          DOM.crossSectionModal.classList.add('active');
+        } else {
+          DOM.crossSectionModal.classList.remove('active');
+        }
+      });
+    });
+
+    // 剖面彈窗關閉按鈕
+    DOM.btnCloseCross.addEventListener('click', () => {
+      sound.playClick();
+      DOM.crossSectionModal.classList.remove('active');
+      document.getElementById('tab-view-2d').click();
+    });
+
+    // 地形剖面按鈕
+    DOM.btnProfileToggle.addEventListener('click', () => {
+      sound.playClick();
+      const isActive = DOM.crossSectionModal.classList.toggle('active');
+      DOM.btnProfileToggle.classList.toggle('active', isActive);
+      if (isActive) {
+        document.getElementById('tab-view-prof').classList.add('active');
+        document.getElementById('tab-view-2d').classList.remove('active');
+        document.getElementById('tab-view-iso').classList.remove('active');
+      }
+    });
+
+    // 案例卡片選擇
+    document.querySelectorAll('.case-card').forEach(card => {
+      card.addEventListener('click', () => {
+        sound.playChord();
+        document.querySelectorAll('.case-card').forEach(c => c.classList.remove('active'));
+        card.classList.add('active');
+        const caseType = card.getAttribute('data-case');
+
+        if (caseType === 'morakot') {
+          currentProgress = 100;
+          showToast('已載入「莫拉克型西南氣流暴雨」物理情境 (T+36h 出海持續降雨)');
+        } else if (caseType === 'autumn-cooperation') {
+          currentProgress = 15;
+          showToast('已載入「秋颱共伴效應」物理情境 (東北季風與外圍環流互動)');
+        } else {
+          currentProgress = 35;
+          showToast('已載入「典型登陸穿心颱」物理情境 (登陸與中央山脈劇烈對流)');
+        }
+        DOM.scrubber.value = currentProgress;
+        renderState(currentProgress);
+      });
+    });
+
+    // 圖層切換開關
+    document.querySelectorAll('.layer-toggle-item').forEach(item => {
+      item.addEventListener('click', () => {
+        sound.playClick();
+        item.classList.toggle('checked');
+        const layerKey = item.getAttribute('data-layer');
+        const isChecked = item.classList.contains('checked');
+
+        if (layerKey === 'wind-field') {
+          document.getElementById('layer-wind-field').style.display = isChecked ? 'block' : 'none';
+        } else if (layerKey === 'terrain-elevation') {
+          document.getElementById('layer-terrain').style.display = isChecked ? 'block' : 'none';
+        } else if (layerKey === 'precipitation') {
+          document.getElementById('layer-precipitation').style.display = isChecked ? 'block' : 'none';
+        } else if (layerKey === 'foehn') {
+          document.getElementById('layer-foehn').style.display = isChecked ? 'block' : 'none';
+        }
+      });
+    });
+
+    // 收藏星標微互動
+    DOM.btnBookmark.addEventListener('click', () => {
+      sound.playClick();
+      const isStarred = DOM.btnBookmark.classList.toggle('starred');
+      showToast(isStarred ? '★ 已將當前颱風地形互動案例加入分析收藏庫！' : '已從收藏庫移除該案例。');
+    });
+
+    // 快照匯出微互動
+    DOM.btnSnapshot.addEventListener('click', () => {
+      sound.playChord();
+      DOM.btnSnapshot.classList.add('active');
+      setTimeout(() => DOM.btnSnapshot.classList.remove('active'), 800);
+      showToast('📸 已匯出高解析度 60fps 向量遙測分析報告 (SVG/JSON Snapshot)');
+    });
+
+    // 初始化渲染
+    renderState(0);
+  </script>
+</body>
+</html>
